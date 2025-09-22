@@ -1,0 +1,5 @@
+aiogram==3.3.0
+pandas
+python-docx
+openpyxl
+nest_asyncio
