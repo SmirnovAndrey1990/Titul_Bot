@@ -7,6 +7,9 @@ from typing import List, Dict, Optional
 from docx import Document
 from docx.text.paragraph import Paragraph
 from docx.oxml import OxmlElement
+import asyncio
+import signal
+import sys
 
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command
@@ -17,7 +20,10 @@ from aiogram.types import FSInputFile, BotCommand, ErrorEvent
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # --- Логирование ---
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # --- Телеграм токен ---
@@ -25,7 +31,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN не установлен!")
-    exit(1)
+    sys.exit(1)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -199,7 +205,7 @@ def create_word_for_each_row_PD(subtables: List[pd.DataFrame], template_path: st
             doc = Document(template_path)
             replace_text_preserve_format_PD(doc, replacements)
 
-            safe_name = str(row.get("Шифр", "без_шифра")) or "без_шифra"
+            safe_name = str(row.get("Шифр", "без_шифра")) or "без_шифра"
             safe_name = re.sub(r"[^А-Яа-яA-Za-z0-9_]+", "_", safe_name)
 
             output_docx = f"{safe_name}.docx"
@@ -349,8 +355,8 @@ async def start_http_server():
     logger.info(f"HTTP server started on port {port}")
     return runner
 
-async def main():
-    """Главная корутина, запускающая и бота, и HTTP-сервер"""
+async def main_bot():
+    """Основная функция запуска бота"""
     # Запускаем HTTP-сервер
     http_runner = await start_http_server()
     
@@ -361,11 +367,55 @@ async def main():
         await dp.start_polling(bot)
     except Exception as e:
         logger.error(f"Bot error: {e}")
+        raise  # Пробрасываем исключение для перезапуска
     finally:
         # Останавливаем HTTP-сервер при завершении
         await http_runner.cleanup()
         logger.info("HTTP server stopped")
 
+async def main_with_restart():
+    """Основная функция с автоматическим перезапуском"""
+    max_restarts = 10
+    restart_count = 0
+    restart_delay = 30  # секунды между перезапусками
+    
+    while restart_count < max_restarts:
+        try:
+            logger.info(f"Запуск бота (попытка {restart_count + 1}/{max_restarts})")
+            await main_bot()
+            
+        except KeyboardInterrupt:
+            logger.info("Бот остановлен пользователем")
+            break
+            
+        except Exception as e:
+            logger.error(f"Бот упал с ошибкой: {e}")
+            restart_count += 1
+            
+            if restart_count < max_restarts:
+                logger.info(f"Перезапуск через {restart_delay} секунд...")
+                await asyncio.sleep(restart_delay)
+                # Увеличиваем задержку с каждой попыткой
+                restart_delay = min(restart_delay * 1.5, 300)  # Макс 5 минут
+            else:
+                logger.error(f"Достигнут лимит перезапусков ({max_restarts}). Бот остановлен.")
+                break
+
+def signal_handler(signum, frame):
+    """Обработчик сигналов для graceful shutdown"""
+    logger.info(f"Получен сигнал {signum}, завершаем работу...")
+    sys.exit(0)
+
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    # Регистрируем обработчики сигналов
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    try:
+        # Запускаем бота с возможностью перезапуска
+        asyncio.run(main_with_restart())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")
+        sys.exit(1)
