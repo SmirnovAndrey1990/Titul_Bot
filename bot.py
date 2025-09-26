@@ -313,6 +313,16 @@ async def help_cmd(message: types.Message):
 """
     await message.answer(help_text)
 
+    try:
+        await message.answer_document(FSInputFile("examples/Состав_ПД.xlsx"))
+        await message.answer_document(FSInputFile("examples/Титул_ПД.docx"))
+        await message.answer_document(FSInputFile("examples/Состав_РД.xlsx"))
+        await message.answer_document(FSInputFile("examples/Титул_РД.docx"))
+    except Exception as e:
+        logger.error(f"Ошибка отправки примеров: {e}")
+        await message.answer("⚠️ Примеры недоступны. Проверьте, что файлы загружены в папку examples/")
+
+
 @dp.errors()
 async def error_handler(event: ErrorEvent):
     logger.error(f"Произошла ошибка: {event.exception}")
