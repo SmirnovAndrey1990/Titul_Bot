@@ -14,15 +14,21 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import FSInputFile, BotCommand, ErrorEvent
+from aiogram.fsm.storage.memory import MemoryStorage
 
 # --- Логирование ---
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- Телеграм токен ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN не установлен!")
+    exit(1)
+
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 
@@ -72,9 +78,11 @@ async def handle_excel(message: types.Message, state: FSMContext):
             _ = pd.read_excel(file_path, usecols=[0, 1, 2])
         else:
             _ = pd.read_excel(file_path)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Ошибка чтения Excel: {e}")
         await message.answer("⚠️ Не удалось прочитать Excel. Проверьте, что файл корректный.")
-        os.remove(file_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
         return
 
     await state.update_data(excel_path=file_path)
@@ -191,7 +199,7 @@ def create_word_for_each_row_PD(subtables: List[pd.DataFrame], template_path: st
             doc = Document(template_path)
             replace_text_preserve_format_PD(doc, replacements)
 
-            safe_name = str(row.get("Шифр", "без_шифра")) or "без_шифра"
+            safe_name = str(row.get("Шифр", "без_шифра")) or "без_шифra"
             safe_name = re.sub(r"[^А-Яа-яA-Za-z0-9_]+", "_", safe_name)
 
             output_docx = f"{safe_name}.docx"
@@ -248,35 +256,67 @@ async def handle_template(message: types.Message, state: FSMContext):
 
     try:
         _ = Document(template_path)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Ошибка открытия Word шаблона: {e}")
         await message.answer("⚠️ Не удалось открыть шаблон Word. Проверьте, что файл корректный.")
-        os.remove(template_path)
+        if os.path.exists(template_path):
+            os.remove(template_path)
         return
 
-    if stage == "ПД":
-        df = pd.read_excel(excel_path, usecols=[0, 1, 2])
-        subtables = split_dataframe_PD(df)
-        archive_name = create_word_for_each_row_PD(subtables, template_path, f"{stage}_docs.zip")
-    else:
-        df = pd.read_excel(excel_path)
-        subtable = split_dataframe_RD(df)
-        archive_name = create_word_for_each_row_RD(subtable, template_path, f"{stage}_docs.zip")
+    try:
+        if stage == "ПД":
+            df = pd.read_excel(excel_path, usecols=[0, 1, 2])
+            subtables = split_dataframe_PD(df)
+            archive_name = create_word_for_each_row_PD(subtables, template_path, f"{stage}_docs.zip")
+        else:
+            df = pd.read_excel(excel_path)
+            subtable = split_dataframe_RD(df)
+            archive_name = create_word_for_each_row_RD(subtable, template_path, f"{stage}_docs.zip")
 
-    await message.answer("Документы сгенерированы ✅ Вот ваш архив:")
-    await message.answer_document(FSInputFile(archive_name))
+        await message.answer("Документы сгенерированы ✅ Вот ваш архив:")
+        await message.answer_document(FSInputFile(archive_name))
 
-    os.remove(excel_path)
-    os.remove(template_path)
-    os.remove(archive_name)
-    await state.clear()
+    except Exception as e:
+        logger.error(f"Ошибка генерации документов: {e}")
+        await message.answer("⚠️ Произошла ошибка при генерации документов.")
+    finally:
+        # Очистка временных файлов
+        for file_path in [excel_path, template_path, f"{stage}_docs.zip"]:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        
+        await state.clear()
+
+@router.message(Command("help"))
+async def help_cmd(message: types.Message):
+    help_text = """
+🤖 **Инструкция по использованию бота:**
+
+1. Нажмите /start
+2. Выберите стадию (ПД или РД)
+3. Отправьте Excel файл с данными
+4. Отправьте Word шаблон
+
+📊 **Требования к Excel файлу:**
+- Для ПД: должны быть колонки Том, Шифр, Часть
+- Для РД: должны быть колонки Шифр, Раздел
+
+📝 **Word шаблон должен содержать поля для замены:**
+- Для ПД: Номер, Название шифра, Название части, Название раздела, Название подраздела
+- Для РД: Название шифра, Название раздела
+"""
+    await message.answer(help_text)
 
 @dp.errors()
 async def error_handler(event: ErrorEvent):
-    logging.error(f"Произошла ошибка: {event.exception}")
-
-    if event.update.message:
+    logger.error(f"Произошла ошибка: {event.exception}")
+    
+    if hasattr(event.update, 'message') and event.update.message:
         await event.update.message.answer("⚠️ Произошла ошибка. Бот перезапущен.")
-        state = dp.fsm.get_context(event.update.message.chat.id, event.update.message.from_user.id)
+        state = dp.fsm.get_context(
+            event.update.message.chat.id, 
+            event.update.message.from_user.id
+        )
         await state.clear()
         await event.update.message.answer("Для какой стадии нужно сделать титульные листы?", reply_markup=stage_keyboard)
 
@@ -287,33 +327,45 @@ async def set_commands(bot: Bot):
     ]
     await bot.set_my_commands(commands)
 
-import asyncio
-from aiogram.fsm.storage.memory import MemoryStorage
+# --- HTTP сервер для Render ---
+from aiohttp import web
+
+async def health_check(request):
+    """Обработчик для health-check запросов от Render"""
+    return web.Response(text="Bot is running")
+
+async def start_http_server():
+    """Запуск HTTP-сервера в том же event loop"""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.getenv("PORT", 8000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"HTTP server started on port {port}")
+    return runner
 
 async def main():
-    dp.fsm.storage = MemoryStorage()
-    await set_commands(bot)
-    await dp.start_polling(bot)
-
-
-from aiohttp import web
-import threading
-
-# Функция для запуска простого HTTP-сервера
-def run_web_server():
-    async def handle(request):
-        return web.Response(text="Bot is running")
-
-    app = web.Application()
-    app.router.add_get('/', handle)
+    """Главная корутина, запускающая и бота, и HTTP-сервер"""
+    # Запускаем HTTP-сервер
+    http_runner = await start_http_server()
     
-    # Важно: использовать порт из переменной окружения Render
-    port = int(os.getenv("PORT", 8000))
-    web.run_app(app, host='0.0.0.0', port=port, print=None)
+    try:
+        # Запускаем бота
+        await set_commands(bot)
+        logger.info("Starting bot polling...")
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
+    finally:
+        # Останавливаем HTTP-сервер при завершении
+        await http_runner.cleanup()
+        logger.info("HTTP server stopped")
 
-# Запустить HTTP-сервер в отдельном потоке
 if __name__ == "__main__":
-    thread = threading.Thread(target=run_web_server)
-    thread.daemon = True
-    thread.start()
+    import asyncio
     asyncio.run(main())
