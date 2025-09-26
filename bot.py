@@ -295,5 +295,25 @@ async def main():
     await set_commands(bot)
     await dp.start_polling(bot)
 
+
+from aiohttp import web
+import threading
+
+# Функция для запуска простого HTTP-сервера
+def run_web_server():
+    async def handle(request):
+        return web.Response(text="Bot is running")
+
+    app = web.Application()
+    app.router.add_get('/', handle)
+    
+    # Важно: использовать порт из переменной окружения Render
+    port = int(os.getenv("PORT", 8000))
+    web.run_app(app, host='0.0.0.0', port=port, print=None)
+
+# Запустить HTTP-сервер в отдельном потоке
 if __name__ == "__main__":
+    thread = threading.Thread(target=run_web_server)
+    thread.daemon = True
+    thread.start()
     asyncio.run(main())
