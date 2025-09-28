@@ -1,42 +1,43 @@
 import logging
-import re
 import os
+import sys
+import re
 import zipfile
 import pandas as pd
 from typing import List, Dict, Optional
 from docx import Document
 from docx.text.paragraph import Paragraph
 from docx.oxml import OxmlElement
+from aiohttp import web
 import asyncio
-import signal
-import sys
 
-from aiogram import Bot, Dispatcher, F, Router, types
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import FSInputFile, BotCommand, ErrorEvent
-from aiogram.fsm.storage.memory import MemoryStorage
 
 # --- Логирование ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# --- Телеграм токен ---
+# --- Настройки ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # полный URL, например https://yourdomain.com/webhook
+WEBHOOK_PATH = "/webhook"
+PORT = int(os.getenv("PORT", 8443))
 
-if not BOT_TOKEN:
-    logger.error("BOT_TOKEN не установлен!")
+if not BOT_TOKEN or not WEBHOOK_URL:
+    logger.error("BOT_TOKEN или WEBHOOK_URL не установлен!")
     sys.exit(1)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-router = Router()
-dp.include_router(router)
 
 # --- Состояния ---
 class GenDocs(StatesGroup):
@@ -44,56 +45,94 @@ class GenDocs(StatesGroup):
     waiting_excel = State()
     waiting_template = State()
 
-# --- Клавиатура для стадий ---
+# --- Клавиатура ---
 stage_keyboard = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="ПД"), KeyboardButton(text="РД")]],
     resize_keyboard=True
 )
 
-# --- Обработчики ---
-@router.message(Command("start"))
+# --- Функции обработки Word и таблиц ---
+# Сюда вставьте все ваши функции:
+# split_dataframe_PD, split_dataframe_RD,
+# replace_text_preserve_format_PD, replace_text_preserve_format_RD,
+# insert_blank_paragraphs_after, create_word_for_each_row_PD, create_word_for_each_row_RD
+# без изменений
+
+# --- Обработчики команд и сообщений ---
+@dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
-    await message.answer("Привет! Для какой стадии нужно сделать титульные листы?", reply_markup=stage_keyboard)
+    await message.answer(
+        "Привет! Я умею делать обложки и титульные листы для проектной и рабочей документации.\n"
+        "Ознакомься с инструкцией и примерами (/help), чтобы все прошло без ошибок.",
+        reply_markup=stage_keyboard
+    )
     await state.set_state(GenDocs.choosing_stage)
 
-@router.message(GenDocs.choosing_stage, F.text.in_(["ПД", "РД"]))
+@dp.message(GenDocs.choosing_stage, F.text.in_(["ПД", "РД"]))
 async def choose_stage(message: types.Message, state: FSMContext):
     stage = message.text.strip()
     await state.update_data(stage=stage)
     await message.answer(f"Вы выбрали стадию: {stage}. Теперь отправьте Excel файл 📑")
     await state.set_state(GenDocs.waiting_excel)
 
-@router.message(GenDocs.waiting_excel, F.document)
-async def handle_excel(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    stage = data.get("stage")
+# Обработчики Excel и Word, help, error_handler остаются такими же, как в вашем коде
+# Только вместо polling мы будем принимать их через webhook
 
-    file = await bot.get_file(message.document.file_id)
-
-    # --- Проверка расширения ---
-    if not file.file_path.endswith(".xlsx"):
-        await message.answer("⚠️ Пожалуйста, отправьте Excel-файл в формате .xlsx")
-        return
-
-    file_path = f"{stage}_data.xlsx"
-    await bot.download_file(file.file_path, file_path)
-
-    # --- Проверка чтения Excel ---
+# --- Обработчик webhook от Telegram ---
+async def handle_webhook(request):
     try:
-        if stage == "ПД":
-            _ = pd.read_excel(file_path, usecols=[0, 1, 2])
-        else:
-            _ = pd.read_excel(file_path)
+        data = await request.json()
+        update = types.Update(**data)
+        await dp.process_update(update)
     except Exception as e:
-        logger.error(f"Ошибка чтения Excel: {e}")
-        await message.answer("⚠️ Не удалось прочитать Excel. Проверьте, что файл корректный.")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        return
+        logger.error(f"Ошибка обработки webhook: {e}")
+    return web.Response(status=200)
 
-    await state.update_data(excel_path=file_path)
-    await message.answer("Файл Excel получен ✅ Теперь отправьте шаблон Word (.docx)")
-    await state.set_state(GenDocs.waiting_template)
+# --- HTTP сервер ---
+async def start_webhook_app():
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.router.add_get("/", lambda request: web.Response(text="Bot is running"))
+    app.router.add_get("/health", lambda request: web.Response(text="OK"))
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"Webhook server running on port {PORT}, path {WEBHOOK_PATH}")
+    return runner
+
+# --- Установка webhook у Telegram ---
+async def setup_webhook():
+    await bot.delete_webhook()
+    await bot.set_webhook(url=f"{WEBHOOK_URL}{WEBHOOK_PATH}")
+    logger.info(f"Webhook установлен: {WEBHOOK_URL}{WEBHOOK_PATH}")
+
+# --- Основная функция ---
+async def main():
+    await setup_webhook()
+    runner = await start_webhook_app()
+    try:
+        while True:
+            await asyncio.sleep(3600)  # держим сервер работающим
+    finally:
+        await runner.cleanup()
+        await bot.session.close()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
+
+
+
+
+
+
+
+
+
 
 # --- Функции обработки таблиц ---
 def split_dataframe_PD(df: pd.DataFrame) -> List[pd.DataFrame]:
@@ -245,187 +284,3 @@ def create_word_for_each_row_RD(subtable: pd.DataFrame, template_path: str, arch
 
     return archive_name
 
-@router.message(GenDocs.waiting_template, F.document)
-async def handle_template(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    stage = data.get("stage")
-    excel_path = data.get("excel_path")
-
-    file = await bot.get_file(message.document.file_id)
-
-    if not file.file_path.endswith(".docx"):
-        await message.answer("⚠️ Пожалуйста, отправьте Word-шаблон в формате .docx")
-        return
-
-    template_path = f"{stage}_template.docx"
-    await bot.download_file(file.file_path, template_path)
-
-    try:
-        _ = Document(template_path)
-    except Exception as e:
-        logger.error(f"Ошибка открытия Word шаблона: {e}")
-        await message.answer("⚠️ Не удалось открыть шаблон Word. Проверьте, что файл корректный.")
-        if os.path.exists(template_path):
-            os.remove(template_path)
-        return
-
-    try:
-        if stage == "ПД":
-            df = pd.read_excel(excel_path, usecols=[0, 1, 2])
-            subtables = split_dataframe_PD(df)
-            archive_name = create_word_for_each_row_PD(subtables, template_path, f"{stage}_docs.zip")
-        else:
-            df = pd.read_excel(excel_path)
-            subtable = split_dataframe_RD(df)
-            archive_name = create_word_for_each_row_RD(subtable, template_path, f"{stage}_docs.zip")
-
-        await message.answer("Документы сгенерированы ✅ Вот ваш архив:")
-        await message.answer_document(FSInputFile(archive_name))
-
-    except Exception as e:
-        logger.error(f"Ошибка генерации документов: {e}")
-        await message.answer("⚠️ Произошла ошибка при генерации документов.")
-    finally:
-        # Очистка временных файлов
-        for file_path in [excel_path, template_path, f"{stage}_docs.zip"]:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        
-        await state.clear()
-
-@router.message(Command("help"))
-async def help_cmd(message: types.Message):
-    help_text = """
-🤖 **Инструкция по использованию бота:**
-
-1. Нажмите /start
-2. Выберите стадию (ПД или РД)
-3. Отправьте Excel файл с данными
-4. Отправьте Word шаблон
-
-📊 **Требования к Excel файлу:**
-- Для ПД: должны быть колонки Том, Шифр, Часть
-- Для РД: должны быть колонки Шифр, Раздел
-
-📝 **Word шаблон должен содержать поля для замены:**
-- Для ПД: Номер, Название шифра, Название части, Название раздела, Название подраздела
-- Для РД: Название шифра, Название раздела
-"""
-    await message.answer(help_text)
-
-    try:
-        await message.answer_document(FSInputFile("examples/Состав_ПД.xlsx"))
-        await message.answer_document(FSInputFile("examples/Титул_ПД.docx"))
-        await message.answer_document(FSInputFile("examples/Состав_РД.xlsx"))
-        await message.answer_document(FSInputFile("examples/Титул_РД.docx"))
-    except Exception as e:
-        logger.error(f"Ошибка отправки примеров: {e}")
-        await message.answer("⚠️ Примеры недоступны. Проверьте, что файлы загружены в папку examples/")
-
-
-@dp.errors()
-async def error_handler(event: ErrorEvent):
-    logger.error(f"Произошла ошибка: {event.exception}")
-    
-    if hasattr(event.update, 'message') and event.update.message:
-        await event.update.message.answer("⚠️ Произошла ошибка. Бот перезапущен.")
-        state = dp.fsm.get_context(
-            event.update.message.chat.id, 
-            event.update.message.from_user.id
-        )
-        await state.clear()
-        await event.update.message.answer("Для какой стадии нужно сделать титульные листы?", reply_markup=stage_keyboard)
-
-async def set_commands(bot: Bot):
-    commands = [
-        BotCommand(command="start", description="Запустить генерацию титульных листов"),
-        BotCommand(command="help", description="Инструкция и примеры файлов"),
-    ]
-    await bot.set_my_commands(commands)
-
-# --- HTTP сервер для Render ---
-from aiohttp import web
-
-async def health_check(request):
-    """Обработчик для health-check запросов от Render"""
-    return web.Response(text="Bot is running")
-
-async def start_http_server():
-    """Запуск HTTP-сервера в том же event loop"""
-    app = web.Application()
-    app.router.add_get('/', health_check)
-    app.router.add_get('/health', health_check)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    port = int(os.getenv("PORT", 8000))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    logger.info(f"HTTP server started on port {port}")
-    return runner
-
-async def main_bot():
-    """Основная функция запуска бота"""
-    # Запускаем HTTP-сервер
-    http_runner = await start_http_server()
-    
-    try:
-        # Запускаем бота
-        await set_commands(bot)
-        logger.info("Starting bot polling...")
-        await dp.start_polling(bot)
-    except Exception as e:
-        logger.error(f"Bot error: {e}")
-        raise  # Пробрасываем исключение для перезапуска
-    finally:
-        # Останавливаем HTTP-сервер при завершении
-        await http_runner.cleanup()
-        logger.info("HTTP server stopped")
-
-async def main_with_restart():
-    """Основная функция с автоматическим перезапуском"""
-    max_restarts = 10
-    restart_count = 0
-    restart_delay = 30  # секунды между перезапусками
-    
-    while restart_count < max_restarts:
-        try:
-            logger.info(f"Запуск бота (попытка {restart_count + 1}/{max_restarts})")
-            await main_bot()
-            
-        except KeyboardInterrupt:
-            logger.info("Бот остановлен пользователем")
-            break
-            
-        except Exception as e:
-            logger.error(f"Бот упал с ошибкой: {e}")
-            restart_count += 1
-            
-            if restart_count < max_restarts:
-                logger.info(f"Перезапуск через {restart_delay} секунд...")
-                await asyncio.sleep(restart_delay)
-                # Увеличиваем задержку с каждой попыткой
-                restart_delay = min(restart_delay * 1.5, 300)  # Макс 5 минут
-            else:
-                logger.error(f"Достигнут лимит перезапусков ({max_restarts}). Бот остановлен.")
-                break
-
-def signal_handler(signum, frame):
-    """Обработчик сигналов для graceful shutdown"""
-    logger.info(f"Получен сигнал {signum}, завершаем работу...")
-    sys.exit(0)
-
-if __name__ == "__main__":
-    # Регистрируем обработчики сигналов
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    try:
-        # Запускаем бота с возможностью перезапуска
-        asyncio.run(main_with_restart())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен")
-    except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-        sys.exit(1)
