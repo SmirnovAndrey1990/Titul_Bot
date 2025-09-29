@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # полный URL, например https://yourdomain.com/webhook
 WEBHOOK_PATH = "/webhook"
-PORT = int(os.getenv("PORT", 8443))
+PORT = int(os.getenv("PORT", 10000))
 
 if not BOT_TOKEN or not WEBHOOK_URL:
     logger.error("BOT_TOKEN или WEBHOOK_URL не установлен!")
