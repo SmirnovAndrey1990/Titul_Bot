@@ -11,14 +11,12 @@ from docx.oxml import OxmlElement
 from aiohttp import web
 import asyncio
 
-
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
-
 
 # --- Логирование ---
 logging.basicConfig(
@@ -29,8 +27,9 @@ logger = logging.getLogger(__name__)
 
 # --- Настройки ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # полный URL, например https://yourdomain.com/webhook
+WEBHOOK_BASE = "https://titul-bot.onrender.com"
 WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = WEBHOOK_BASE + WEBHOOK_PATH
 PORT = int(os.getenv("PORT", 8443))
 
 if not BOT_TOKEN or not WEBHOOK_URL:
@@ -52,14 +51,7 @@ stage_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# --- Функции обработки Word и таблиц ---
-# Сюда вставьте все ваши функции:
-# split_dataframe_PD, split_dataframe_RD,
-# replace_text_preserve_format_PD, replace_text_preserve_format_RD,
-# insert_blank_paragraphs_after, create_word_for_each_row_PD, create_word_for_each_row_RD
-# без изменений
-
-# --- Обработчики команд и сообщений ---
+# --- Обработчики команд ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     await message.answer(
@@ -76,13 +68,12 @@ async def choose_stage(message: types.Message, state: FSMContext):
     await message.answer(f"Вы выбрали стадию: {stage}. Теперь отправьте Excel файл 📑")
     await state.set_state(GenDocs.waiting_excel)
 
-
 # --- Webhook handler ---
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
         update = types.Update(**data)
-        await dp.feed_update(update)  # <-- исправлено
+        await dp.feed_update(bot, update)  # исправлено: нужен bot
     except Exception as e:
         logger.error(f"Ошибка обработки webhook: {e}")
     return web.Response(status=200)
@@ -90,7 +81,16 @@ async def handle_webhook(request: web.Request):
 # --- HTTP сервер ---
 async def start_webhook_app():
     app = web.Application()
+
+    # основной обработчик Telegram
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+    # если Telegram всё равно шлёт POST на /
+    async def redirect_post(request):
+        return await handle_webhook(request)
+    app.router.add_post("/", redirect_post)
+
+    # проверки
     app.router.add_get("/", lambda request: web.Response(text="Bot is running"))
     app.router.add_get("/health", lambda request: web.Response(text="OK"))
 
@@ -101,10 +101,10 @@ async def start_webhook_app():
     logger.info(f"Webhook server running on port {PORT}, path {WEBHOOK_PATH}")
     return runner
 
-# --- Установка webhook у Telegram ---
+# --- Установка webhook ---
 async def setup_webhook():
     await bot.delete_webhook()
-    await bot.set_webhook(WEBHOOK_URL)
+    await bot.set_webhook(WEBHOOK_URL)  # правильный путь
     logger.info(f"Webhook установлен: {WEBHOOK_URL}")
 
 # --- Основная функция ---
@@ -123,15 +123,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем")
-
-
-
-
-
-
-
-
-
 
 # --- Функции обработки таблиц ---
 def split_dataframe_PD(df: pd.DataFrame) -> List[pd.DataFrame]:
@@ -282,4 +273,3 @@ def create_word_for_each_row_RD(subtable: pd.DataFrame, template_path: str, arch
             os.remove(f)
 
     return archive_name
-
