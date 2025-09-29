@@ -18,7 +18,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.types import FSInputFile, BotCommand, ErrorEvent
+from aiogram.types import Update, FSInputFile, BotCommand, ErrorEvent
 
 # --- Логирование ---
 logging.basicConfig(
@@ -80,11 +80,11 @@ async def choose_stage(message: types.Message, state: FSMContext):
 # Только вместо polling мы будем принимать их через webhook
 
 # --- Обработчик webhook от Telegram ---
-async def handle_webhook(request):
+async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
-        update = types.Update(**data)
-        await dp.process_update(update)
+        update = Update.model_validate(data)
+        await dp.feed_update(bot, update)
     except Exception as e:
         logger.error(f"Ошибка обработки webhook: {e}")
     return web.Response(status=200)
@@ -106,8 +106,8 @@ async def start_webhook_app():
 # --- Установка webhook у Telegram ---
 async def setup_webhook():
     await bot.delete_webhook()
-    await bot.set_webhook(url=f"{WEBHOOK_URL}{WEBHOOK_PATH}")
-    logger.info(f"Webhook установлен: {WEBHOOK_URL}{WEBHOOK_PATH}")
+    await bot.set_webhook(WEBHOOK_URL)
+    logger.info(f"Webhook установлен: {WEBHOOK_URL}")
 
 # --- Основная функция ---
 async def main():
@@ -115,7 +115,7 @@ async def main():
     runner = await start_webhook_app()
     try:
         while True:
-            await asyncio.sleep(3600)  # держим сервер работающим
+            await asyncio.sleep(3600)
     finally:
         await runner.cleanup()
         await bot.session.close()
