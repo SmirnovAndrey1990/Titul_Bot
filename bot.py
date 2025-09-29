@@ -11,7 +11,8 @@ from docx.oxml import OxmlElement
 from aiohttp import web
 import asyncio
 
-from aiogram import Bot, Dispatcher, types
+
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
