@@ -83,8 +83,8 @@ async def choose_stage(message: types.Message, state: FSMContext):
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
-        update = Update.model_validate(data)
-        await dp.feed_update(bot, update)
+        update = types.Update(**data)
+        await dp.feed_update(update)  # <-- исправлено
     except Exception as e:
         logger.error(f"Ошибка обработки webhook: {e}")
     return web.Response(status=200)
