@@ -18,7 +18,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.types import Update, FSInputFile, BotCommand, ErrorEvent
+
 
 # --- Логирование ---
 logging.basicConfig(
@@ -76,10 +76,8 @@ async def choose_stage(message: types.Message, state: FSMContext):
     await message.answer(f"Вы выбрали стадию: {stage}. Теперь отправьте Excel файл 📑")
     await state.set_state(GenDocs.waiting_excel)
 
-# Обработчики Excel и Word, help, error_handler остаются такими же, как в вашем коде
-# Только вместо polling мы будем принимать их через webhook
 
-# --- Обработчик webhook от Telegram ---
+# --- Webhook handler ---
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
