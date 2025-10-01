@@ -255,11 +255,7 @@ async def main():
         await runner.cleanup()
         await bot.session.close()
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
+
 
 
 
@@ -419,3 +415,10 @@ def create_word_for_each_row_RD(subtable: pd.DataFrame, template_path: str, arch
             os.remove(f)
 
     return archive_name
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
