@@ -361,7 +361,7 @@ def replace_text_preserve_format_RD(doc: Document, replacements: Dict[str, Optio
                 if key in run.text:
                     run.text = run.text.replace(key, value)
 
-                    if key == "Название раздела" and allow_blank_insertion:
+                    if key == "Название шифра" and allow_blank_insertion:
                         insert_blank_paragraphs_after(p, 2)
 
 
