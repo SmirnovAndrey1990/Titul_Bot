@@ -301,6 +301,7 @@ def split_dataframe_PD(df: pd.DataFrame) -> List[pd.DataFrame]:
 
     return subtables
 
+
 def split_dataframe_RD(df: pd.DataFrame) -> pd.DataFrame:
     second_col = df.columns[1]
     start_idx = df.index[
@@ -311,6 +312,7 @@ def split_dataframe_RD(df: pd.DataFrame) -> pd.DataFrame:
     section_df.columns = ["Шифр", "Раздел"]
 
     return section_df
+
 
 def replace_text_preserve_format_PD(doc: Document, replacements: Dict[str, Optional[str]]) -> None:
     none_keys = {key for key, value in replacements.items() if value is None}
@@ -346,12 +348,24 @@ def replace_text_preserve_format_PD(doc: Document, replacements: Dict[str, Optio
             if any(p._element == cipher_paragraph._element for p in doc.paragraphs):
                 insert_blank_paragraphs_after(cipher_paragraph, 4)
 
+
 def replace_text_preserve_format_RD(doc: Document, replacements: Dict[str, Optional[str]]) -> None:
+
+    part_text = str(replacements.get("Название раздела", ""))
+    word_count = len(part_text.split())
+    allow_blank_insertion = word_count <= 12
+
     for p in reversed(doc.paragraphs):
         for run in p.runs:
             for key, value in replacements.items():
                 if key in run.text:
                     run.text = run.text.replace(key, value)
+
+        if key == "Название раздела" and allow_blank_insertion:
+            insert_blank_paragraphs_after(p, 2)
+
+
+
 
 def insert_blank_paragraphs_after(paragraph: Paragraph, count: int) -> None:
     for _ in range(count):
@@ -359,6 +373,7 @@ def insert_blank_paragraphs_after(paragraph: Paragraph, count: int) -> None:
         p_pr = OxmlElement('w:pPr')
         new_p.append(p_pr)
         paragraph._element.addnext(new_p)
+
 
 def create_word_for_each_row_PD(subtables: List[pd.DataFrame], template_path: str, archive_name: str = "documents.zip") -> str:
     temp_files = []
@@ -389,6 +404,7 @@ def create_word_for_each_row_PD(subtables: List[pd.DataFrame], template_path: st
             os.remove(f)
 
     return archive_name
+
 
 def create_word_for_each_row_RD(subtable: pd.DataFrame, template_path: str, archive_name: str = "documents.zip") -> str:
     temp_files = []
