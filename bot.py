@@ -20,6 +20,15 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.types import Update
 
+
+from aiogram import Bot, Dispatcher, F, Router, types
+from aiogram.filters import Command
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import FSInputFile, BotCommand, ErrorEvent, Update
+from aiogram.fsm.storage.memory import MemoryStorage
+
 # --- Логирование ---
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +48,8 @@ if not BOT_TOKEN or not WEBHOOK_URL:
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+router = Router()
+dp.include_router(router)
 
 # --- Состояния ---
 class GenDocs(StatesGroup):
@@ -46,38 +57,162 @@ class GenDocs(StatesGroup):
     waiting_excel = State()
     waiting_template = State()
 
-# --- Клавиатура ---
+# --- Клавиатура для стадий ---
 stage_keyboard = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="ПД"), KeyboardButton(text="РД")]],
     resize_keyboard=True
 )
 
-# --- Функции обработки Word и таблиц ---
-# Сюда вставьте все ваши функции:
-# split_dataframe_PD, split_dataframe_RD,
-# replace_text_preserve_format_PD, replace_text_preserve_format_RD,
-# insert_blank_paragraphs_after, create_word_for_each_row_PD, create_word_for_each_row_RD
-# без изменений
-
-# --- Обработчики команд и сообщений ---
-@dp.message(Command("start"))
+# --- Обработчики ---
+@router.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
-    await message.answer(
-        "Привет! Я умею делать обложки и титульные листы для проектной и рабочей документации.\n"
-        "Ознакомься с инструкцией и примерами (/help), чтобы все прошло без ошибок.",
-        reply_markup=stage_keyboard
-    )
+    await message.answer("Привет! Для какой стадии нужно сделать титульные листы?", reply_markup=stage_keyboard)
     await state.set_state(GenDocs.choosing_stage)
 
-@dp.message(GenDocs.choosing_stage, F.text.in_(["ПД", "РД"]))
+@router.message(GenDocs.choosing_stage, F.text.in_(["ПД", "РД"]))
 async def choose_stage(message: types.Message, state: FSMContext):
     stage = message.text.strip()
     await state.update_data(stage=stage)
     await message.answer(f"Вы выбрали стадию: {stage}. Теперь отправьте Excel файл 📑")
     await state.set_state(GenDocs.waiting_excel)
 
-# Обработчики Excel и Word, help, error_handler остаются такими же, как в вашем коде
-# Только вместо polling мы будем принимать их через webhook
+@router.message(GenDocs.waiting_excel, F.document)
+async def handle_excel(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    stage = data.get("stage")
+
+    file = await bot.get_file(message.document.file_id)
+
+    # --- Проверка расширения ---
+    if not file.file_path.endswith(".xlsx"):
+        await message.answer("⚠️ Пожалуйста, отправьте Excel-файл в формате .xlsx")
+        return
+
+    file_path = f"{stage}_data.xlsx"
+    await bot.download_file(file.file_path, file_path)
+
+    # --- Проверка чтения Excel ---
+    try:
+        if stage == "ПД":
+            _ = pd.read_excel(file_path, usecols=[0, 1, 2])
+        else:
+            _ = pd.read_excel(file_path)
+    except Exception as e:
+        logger.error(f"Ошибка чтения Excel: {e}")
+        await message.answer("⚠️ Не удалось прочитать Excel. Проверьте, что файл корректный.")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return
+
+    await state.update_data(excel_path=file_path)
+    await message.answer("Файл Excel получен ✅ Теперь отправьте шаблон Word (.docx)")
+    await state.set_state(GenDocs.waiting_template)
+
+
+@router.message(GenDocs.waiting_template, F.document)
+async def handle_template(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    stage = data.get("stage")
+    excel_path = data.get("excel_path")
+
+    file = await bot.get_file(message.document.file_id)
+
+    if not file.file_path.endswith(".docx"):
+        await message.answer("⚠️ Пожалуйста, отправьте Word-шаблон в формате .docx")
+        return
+
+    template_path = f"{stage}_template.docx"
+    await bot.download_file(file.file_path, template_path)
+
+    try:
+        _ = Document(template_path)
+    except Exception as e:
+        logger.error(f"Ошибка открытия Word шаблона: {e}")
+        await message.answer("⚠️ Не удалось открыть шаблон Word. Проверьте, что файл корректный.")
+        if os.path.exists(template_path):
+            os.remove(template_path)
+        return
+
+    try:
+        if stage == "ПД":
+            df = pd.read_excel(excel_path, usecols=[0, 1, 2])
+            subtables = split_dataframe_PD(df)
+            archive_name = create_word_for_each_row_PD(subtables, template_path, f"{stage}_docs.zip")
+        else:
+            df = pd.read_excel(excel_path)
+            subtable = split_dataframe_RD(df)
+            archive_name = create_word_for_each_row_RD(subtable, template_path, f"{stage}_docs.zip")
+
+        await message.answer("Документы сгенерированы ✅ Вот ваш архив:")
+        await message.answer_document(FSInputFile(archive_name))
+
+    except Exception as e:
+        logger.error(f"Ошибка генерации документов: {e}")
+        await message.answer("⚠️ Произошла ошибка при генерации документов.")
+    finally:
+        # Очистка временных файлов
+        for file_path in [excel_path, template_path, f"{stage}_docs.zip"]:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        
+        await state.clear()
+
+@router.message(Command("help"))
+async def help_cmd(message: types.Message):
+    help_text = """
+🤖 **Инструкция по использованию бота:**
+
+1. Нажмите /start
+2. Выберите стадию (ПД или РД)
+3. Отправьте Excel файл с данными
+4. Отправьте Word шаблон
+
+📊 **Требования к Excel файлу:**
+- Для ПД: должны быть колонки Том, Шифр, Часть
+- Для РД: должны быть колонки Шифр, Раздел
+
+📝 **Word шаблон должен содержать поля для замены:**
+- Для ПД: Номер, Название шифра, Название части, Название раздела, Название подраздела
+- Для РД: Название шифра, Название раздела
+"""
+    await message.answer(help_text)
+
+    try:
+        await message.answer_document(FSInputFile("examples/Состав_ПД.xlsx"))
+        await message.answer_document(FSInputFile("examples/Титул_ПД.docx"))
+        await message.answer_document(FSInputFile("examples/Состав_РД.xlsx"))
+        await message.answer_document(FSInputFile("examples/Титул_РД.docx"))
+    except Exception as e:
+        logger.error(f"Ошибка отправки примеров: {e}")
+        await message.answer("⚠️ Примеры недоступны. Проверьте, что файлы загружены в папку examples/")
+
+
+@dp.errors()
+async def error_handler(event: ErrorEvent):
+    logger.error(f"Произошла ошибка: {event.exception}")
+    
+    if hasattr(event.update, 'message') and event.update.message:
+        await event.update.message.answer("⚠️ Произошла ошибка. Бот перезапущен.")
+        state = dp.fsm.get_context(
+            event.update.message.chat.id, 
+            event.update.message.from_user.id
+        )
+        await state.clear()
+        await event.update.message.answer("Для какой стадии нужно сделать титульные листы?", reply_markup=stage_keyboard)
+
+async def set_commands(bot: Bot):
+    commands = [
+        BotCommand(command="start", description="Запустить генерацию титульных листов"),
+        BotCommand(command="help", description="Инструкция и примеры файлов"),
+    ]
+    await bot.set_my_commands(commands)
+
+
+
+
+
+
+
 
 # --- Обработчик webhook от Telegram ---
 async def handle_webhook(request: web.Request):
